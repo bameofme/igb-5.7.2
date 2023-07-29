@@ -47,6 +47,10 @@ char igb_driver_version[] = DRV_VERSION;
 static const char igb_driver_string[] = DRV_SUMMARY;
 static const char igb_copyright[] = "Copyright(c) 2007 - 2021 Intel Corporation.";
 
+#define DUMMY_DRV_NAME "dummy_eth"
+
+static struct net_device *dummy_dev;
+
 static const struct pci_device_id igb_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_I354_BACKPLANE_1GBPS) },
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_I354_SGMII) },
@@ -300,6 +304,38 @@ static int debug = NETIF_MSG_DRV | NETIF_MSG_PROBE;
 module_param(debug, int, 0);
 MODULE_PARM_DESC(debug, "Debug level (0=none, ..., 16=all)");
 
+
+static int dummy_open(struct net_device *dev)
+{
+    netif_start_queue(dev);
+    return 0;
+}
+
+static int dummy_stop(struct net_device *dev)
+{
+    netif_stop_queue(dev);
+    return 0;
+}
+
+static netdev_tx_t dummy_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+    dev_kfree_skb(skb); // Dummy driver discards all packets
+    return NETDEV_TX_OK;
+}
+
+static struct net_device_ops dummy_netdev_ops = {
+    .ndo_open = dummy_open,
+    .ndo_stop = dummy_stop,
+    .ndo_start_xmit = dummy_xmit,
+};
+
+static void dummy_setup(struct net_device *dev)
+{
+    ether_setup(dev);
+    dev->netdev_ops = &dummy_netdev_ops;
+    dev->flags |= IFF_NOARP;
+}
+
 /**
  * igb_init_module - Driver Registration Routine
  *
@@ -309,6 +345,17 @@ MODULE_PARM_DESC(debug, "Debug level (0=none, ..., 16=all)");
 static int __init igb_init_module(void)
 {
 	int ret;
+
+	dummy_dev = alloc_netdev(0, DUMMY_DRV_NAME, NET_NAME_UNKNOWN, dummy_setup);
+    if (!dummy_dev)
+        return -ENOMEM;
+
+    if (register_netdev(dummy_dev)) {
+        free_netdev(dummy_dev);
+        return -ENODEV;
+    }
+
+    pr_info("Dummy Ethernet driver initialized.\n");
 
 	pr_info("%s - version %s\n",
 	       igb_driver_string, igb_driver_version);
@@ -359,6 +406,10 @@ static void __exit igb_exit_module(void)
 	igb_procfs_topdir_exit();
 #endif /* IGB_PROCFS */
 #endif /* IGB_HWMON */
+
+	unregister_netdev(dummy_dev);
+    free_netdev(dummy_dev);
+    pr_info("Dummy Ethernet driver exited.\n");
 }
 
 module_exit(igb_exit_module);
@@ -3436,6 +3487,7 @@ static void igb_remove(struct pci_dev *pdev)
 #endif /* IGB_HWMON */
 	kfree(adapter->mac_table);
 	kfree(adapter->shadow_vfta);
+	// free_netdev(adapter->childDev);
 	free_netdev(netdev);
 
 	pci_disable_pcie_error_reporting(pdev);
@@ -3632,6 +3684,7 @@ err_setup_tx:
 
 int igb_open(struct net_device *netdev)
 {
+	printk("================igb_open");
 	return __igb_open(netdev, false);
 }
 
@@ -6040,6 +6093,8 @@ static netdev_tx_t igb_xmit_frame(struct sk_buff *skb,
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 
+	printk("==========igb_xmit_frame");
+	
 	if (test_bit(__IGB_DOWN, &adapter->state)) {
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
@@ -6479,6 +6534,7 @@ static irqreturn_t igb_msix_ring(int irq, void *data)
 	struct igb_q_vector *q_vector = data;
 
 	/* Write the ITR value calculated from the previous interrupt. */
+	printk("======================MSIX,irq = %d ,q_vector->adapter->netdev->name = %s, q_vector->name =%s \n", irq, q_vector->adapter->netdev->name, q_vector->name);
 	igb_write_itr(q_vector);
 
 	napi_schedule(&q_vector->napi);
@@ -7466,6 +7522,7 @@ static int igb_poll(struct napi_struct *napi, int budget)
 						     struct igb_q_vector, napi);
 	bool clean_complete = true;
 
+	printk("==============igb poll");
 #ifdef IGB_DCA
 	if (q_vector->adapter->flags & IGB_FLAG_DCA_ENABLED)
 		igb_update_dca(q_vector);
@@ -8712,6 +8769,7 @@ static bool igb_clean_rx_irq(struct igb_q_vector *q_vector, int budget)
 
 		/* populate checksum, timestamp, VLAN, and protocol */
 		igb_process_skb_fields(rx_ring, rx_desc, skb);
+		skb->dev = dummy_dev;
 
 #ifndef IGB_NO_LRO
 		if (igb_can_lro(rx_ring, rx_desc, skb))
