@@ -49,7 +49,13 @@ static const char igb_copyright[] = "Copyright(c) 2007 - 2021 Intel Corporation.
 
 #define DUMMY_DRV_NAME "dummy_eth"
 
+struct dummy_private {
+	struct igb_adapter *adapter;
+	struct net_device *netdev;
+};
 static struct net_device *dummy_dev;
+
+static uint8_t dummy_mac_addr[ETH_ALEN] = {0x15, 0x11, 0x22, 0x33, 0x44, 0x25};
 
 static const struct pci_device_id igb_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_I354_BACKPLANE_1GBPS) },
@@ -319,8 +325,10 @@ static int dummy_stop(struct net_device *dev)
 
 static netdev_tx_t dummy_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-    dev_kfree_skb(skb); // Dummy driver discards all packets
-    return NETDEV_TX_OK;
+	struct dummy_private *myadapter = netdev_priv(dev);
+
+	printk("dummy_xmit\n");
+	return igb_xmit_frame(skb, myadapter->adapter->netdev);
 }
 
 static struct net_device_ops dummy_netdev_ops = {
@@ -332,6 +340,7 @@ static struct net_device_ops dummy_netdev_ops = {
 static void dummy_setup(struct net_device *dev)
 {
     ether_setup(dev);
+	memcpy(dev->dev_addr, dummy_mac_addr, ETH_ALEN);
     dev->netdev_ops = &dummy_netdev_ops;
     dev->flags |= IFF_NOARP;
 }
@@ -2767,6 +2776,7 @@ static int igb_probe(struct pci_dev *pdev,
 	struct net_device *netdev;
 	struct igb_adapter *adapter;
 	struct e1000_hw *hw;
+	struct dummy_private *myadapter;
 	u16 eeprom_data = 0;
 	u8 pba_str[E1000_PBANUM_LENGTH];
 	s32 ret_val;
@@ -2849,6 +2859,9 @@ static int igb_probe(struct pci_dev *pdev,
 	hw->back = adapter;
 	adapter->port_num = hw->bus.func;
 	adapter->msg_enable = GENMASK(debug - 1, 0);
+	myadapter = netdev_priv(dummy_dev);
+	myadapter->adapter = adapter;
+	myadapter->netdev = dummy_dev;
 
 #ifdef HAVE_PCI_ERS
 	err = pci_save_state(pdev);
@@ -3684,7 +3697,6 @@ err_setup_tx:
 
 int igb_open(struct net_device *netdev)
 {
-	printk("================igb_open");
 	return __igb_open(netdev, false);
 }
 
@@ -6093,7 +6105,7 @@ static netdev_tx_t igb_xmit_frame(struct sk_buff *skb,
 {
 	struct igb_adapter *adapter = netdev_priv(netdev);
 
-	printk("==========igb_xmit_frame");
+	printk("==========igb_xmit_frame netdev->name =%s\n", netdev->name);
 	
 	if (test_bit(__IGB_DOWN, &adapter->state)) {
 		dev_kfree_skb_any(skb);
@@ -6534,7 +6546,6 @@ static irqreturn_t igb_msix_ring(int irq, void *data)
 	struct igb_q_vector *q_vector = data;
 
 	/* Write the ITR value calculated from the previous interrupt. */
-	printk("======================MSIX,irq = %d ,q_vector->adapter->netdev->name = %s, q_vector->name =%s \n", irq, q_vector->adapter->netdev->name, q_vector->name);
 	igb_write_itr(q_vector);
 
 	napi_schedule(&q_vector->napi);
