@@ -48,14 +48,16 @@ static const char igb_driver_string[] = DRV_SUMMARY;
 static const char igb_copyright[] = "Copyright(c) 2007 - 2021 Intel Corporation.";
 
 #define DUMMY_DRV_NAME "dummy_eth"
+#define NUM_INTERFACE	4
 
 struct dummy_private {
 	struct igb_adapter *adapter;
 	struct net_device *netdev;
 };
-static struct net_device *dummy_dev;
+static struct net_device *dummy_dev[NUM_INTERFACE];
+int dummy_count = 0;
 
-static uint8_t dummy_mac_addr[ETH_ALEN] = {0x15, 0x11, 0x22, 0x33, 0x44, 0x25};
+static uint8_t dummy_mac_addr[ETH_ALEN] = {0x15, 0x16, 0x17, 0x18, 0x19, 0x00};
 
 static const struct pci_device_id igb_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, E1000_DEV_ID_I354_BACKPLANE_1GBPS) },
@@ -340,9 +342,56 @@ static struct net_device_ops dummy_netdev_ops = {
 static void dummy_setup(struct net_device *dev)
 {
     ether_setup(dev);
-	memcpy(dev->dev_addr, dummy_mac_addr, ETH_ALEN);
     dev->netdev_ops = &dummy_netdev_ops;
-    dev->flags |= IFF_NOARP;
+    // dev->flags |= IFF_NOARP;
+}
+
+static int init_vinterfaces(void)
+{
+	int i = 0, j =0;
+	int ret = 0;
+	char name[64];
+
+	for (i = 0; i < NUM_INTERFACE; i++)
+	{
+		sprintf(name, DUMMY_DRV_NAME "_%d", i);
+		dummy_dev[i] = alloc_netdev(0, name, NET_NAME_UNKNOWN, dummy_setup);
+		if (!dummy_dev[i])
+		{
+			ret = -ENOMEM;
+			break;
+		}
+		dummy_mac_addr[5] = i;
+		memcpy(dummy_dev[i]->dev_addr, dummy_mac_addr, ETH_ALEN);
+
+		if (register_netdev(dummy_dev[i])) {
+    		free_netdev(dummy_dev[i]);
+			ret = -ENODEV;
+			break;
+		}
+		printk("successfull register dummy_dev[%d] dummy_dev[i]->name =%s\n", i, dummy_dev[i]->name);
+	}
+
+	if (ret != 0)
+	{
+		for(j = 0; j < i; j++)
+		{
+			unregister_netdev(dummy_dev[j]);
+    		free_netdev(dummy_dev[j]);
+		}
+	}
+	return ret;
+}
+
+static void deinit_vinterfaces(void)
+{
+	int i;
+
+	for(i = 0; i < NUM_INTERFACE ; i++)
+	{
+		unregister_netdev(dummy_dev[i]);
+		free_netdev(dummy_dev[i]);
+	}
 }
 
 /**
@@ -355,14 +404,6 @@ static int __init igb_init_module(void)
 {
 	int ret;
 
-	dummy_dev = alloc_netdev(0, DUMMY_DRV_NAME, NET_NAME_UNKNOWN, dummy_setup);
-    if (!dummy_dev)
-        return -ENOMEM;
-
-    if (register_netdev(dummy_dev)) {
-        free_netdev(dummy_dev);
-        return -ENODEV;
-    }
 
     pr_info("Dummy Ethernet driver initialized.\n");
 
@@ -416,9 +457,6 @@ static void __exit igb_exit_module(void)
 #endif /* IGB_PROCFS */
 #endif /* IGB_HWMON */
 
-	unregister_netdev(dummy_dev);
-    free_netdev(dummy_dev);
-    pr_info("Dummy Ethernet driver exited.\n");
 }
 
 module_exit(igb_exit_module);
@@ -2783,6 +2821,7 @@ static int igb_probe(struct pci_dev *pdev,
 	static int global_quad_port_a; /* global quad port a indication */
 	int err, pci_using_dac;
 	static int cards_found;
+	int i;
 #ifdef HAVE_NDO_SET_FEATURES
 #ifdef HAVE_RHEL6_NET_DEVICE_OPS_EXT
 	u32 hw_features;
@@ -2859,10 +2898,7 @@ static int igb_probe(struct pci_dev *pdev,
 	hw->back = adapter;
 	adapter->port_num = hw->bus.func;
 	adapter->msg_enable = GENMASK(debug - 1, 0);
-	myadapter = netdev_priv(dummy_dev);
-	myadapter->adapter = adapter;
-	myadapter->netdev = dummy_dev;
-
+	// 0++;
 #ifdef HAVE_PCI_ERS
 	err = pci_save_state(pdev);
 	if (err)
@@ -3265,6 +3301,19 @@ static int igb_probe(struct pci_dev *pdev,
 	if (err)
 		goto err_register;
 
+	if (strcmp(netdev->name, "eth2") == 0)
+	{
+		err = init_vinterfaces();
+
+		if (err < 0)
+			goto err_register;
+		for (i = 0; i < NUM_INTERFACE; i++)
+		{
+			myadapter = netdev_priv(dummy_dev[i]);
+			myadapter->adapter = adapter;
+		}
+	}
+
 #ifdef CONFIG_IGB_VMDQ_NETDEV
 	err = igb_init_vmdq_netdevs(adapter);
 	if (err)
@@ -3478,6 +3527,11 @@ static void igb_remove(struct pci_dev *pdev)
 	 */
 	igb_release_hw_control(adapter);
 
+	if (strcmp(netdev->name, "eth2") == 0)
+	{
+		deinit_vinterfaces();
+	}
+	
 	unregister_netdev(netdev);
 
 	igb_clear_interrupt_scheme(adapter);
@@ -7533,7 +7587,7 @@ static int igb_poll(struct napi_struct *napi, int budget)
 						     struct igb_q_vector, napi);
 	bool clean_complete = true;
 
-	printk("==============igb poll");
+	// printk("==============igb poll");
 #ifdef IGB_DCA
 	if (q_vector->adapter->flags & IGB_FLAG_DCA_ENABLED)
 		igb_update_dca(q_vector);
@@ -8726,6 +8780,30 @@ static bool igb_cleanup_headers(struct igb_ring *rx_ring,
 
 	return false;
 }
+static void check_mac_last_octet(struct sk_buff *skb) {
+    struct ethhdr *eth = eth_hdr(skb);
+
+    if (eth) {
+        unsigned char *mac = eth->h_source;
+        switch (mac[5])
+		{
+		case 0x01:
+			skb->dev = dummy_dev[1];
+			break;
+		case 0x02:
+			skb->dev = dummy_dev[2];
+			break;
+		case 0x03:
+			skb->dev = dummy_dev[3];
+			break;
+		
+		default:
+			skb->dev = dummy_dev[0];
+			break;
+		}
+		
+    }
+}
 
 /* igb_clean_rx_irq -- * packet split */
 static bool igb_clean_rx_irq(struct igb_q_vector *q_vector, int budget)
@@ -8780,7 +8858,7 @@ static bool igb_clean_rx_irq(struct igb_q_vector *q_vector, int budget)
 
 		/* populate checksum, timestamp, VLAN, and protocol */
 		igb_process_skb_fields(rx_ring, rx_desc, skb);
-		skb->dev = dummy_dev;
+		check_mac_last_octet(skb);
 
 #ifndef IGB_NO_LRO
 		if (igb_can_lro(rx_ring, rx_desc, skb))
